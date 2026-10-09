@@ -2,6 +2,10 @@
 
 Local maritime investigation workbench. Opens directly to a map with real NOAA survey footprints, catalogue wreck records, and computed terrain candidates. Python/FastAPI, SQLite, Rasterio/SciPy, React/TypeScript, MapLibre and Three.js. No paid service is required for the map, archive search, evidence audit, survey analysis or reports.
 
+![Mystery Collier wreck profile with NOAA side-scan sonar imagery and sonar-derived dimensions](docs/screenshots/investigate.png)
+
+![Survey workbench comparing measured NOAA multibeam bathymetry with the terrain-residual detector output](docs/screenshots/survey.png)
+
 ## Start
 
 From this directory:
