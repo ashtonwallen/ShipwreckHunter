@@ -1,0 +1,10 @@
+﻿import { chromium } from '@playwright/test';
+const browser=await chromium.launch({headless:true,channel:'chrome'});
+const page=await browser.newPage({viewport:{width:1536,height:1000}});
+page.on('pageerror',e=>console.log('PAGE_ERROR',e.message));
+await page.goto('http://127.0.0.1:8787');await page.waitForSelector('.maplibregl-canvas');await page.waitForTimeout(4000);
+await page.screenshot({path:'../data/exports/explore.png'});
+await page.getByRole('button',{name:'Investigate',exact:true}).click();await page.screenshot({path:'../data/exports/investigate.png'});
+await page.getByRole('button',{name:'Surveys',exact:true}).click();await page.screenshot({path:'../data/exports/surveys.png'});
+console.log('TITLE',await page.title());console.log('CANVAS',await page.locator('canvas').count());
+await browser.close();

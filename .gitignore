@@ -1,0 +1,20 @@
+.venv/
+frontend/node_modules/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.tsbuildinfo
+*.sqlite-wal
+*.sqlite-shm
+*.part
+*.part.json
+.env
+.env.*
+data/private/
+
+# re-downloadable source data and build output
+data/raw/
+frontend/dist/
+
+# all generated and downloaded data stays local
+data/

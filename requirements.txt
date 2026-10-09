@@ -1,0 +1,13 @@
+fastapi==0.143.0
+uvicorn==0.54.0
+httpx==0.28.1
+beautifulsoup4==4.15.0
+numpy==2.5.3
+scipy==1.18.1
+rasterio==1.5.2
+pyproj==3.8.0
+pillow==12.3.0
+keyring==25.7.0
+pypdf==6.19.0
+Markdown==3.11
+pytest==9.1.1
