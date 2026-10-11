@@ -14,6 +14,8 @@ The service binds to 127.0.0.1. Host checks and a loopback-origin mutation check
 
 ## Module guide
 
+`backend/mcp_server.py` exposes the assistant's existing tool definitions and dispatcher through the official MCP SDK, plus paginated saved-source/note/job reads, full-text slices, reports and bounded job controls. JSON Schema validation rejects unknown or malformed calls before execution. Synchronous work runs off the event loop and valid calls persist as `kind: mcp` audit jobs. The Streamable HTTP `/mcp` route runs inside FastAPI's lifespan, before the static frontend, using the same database and worker pool. Host/origin checks apply to MCP too. `mcp_stdio.py` is a loopback-only protocol bridge for desktop clients; it imports no backend code and cannot trigger job recovery or create competing workers. No app-provider inference is invoked by these tools.
+
 - `backend/db.py`: persistence and append-only source claims/events.
 - `backend/connectors.py`: NOAA coverage/products, AWOIS copy, LOC, Internet Archive and content preservation.
 - `backend/analysis.py`: ingestion, operators, PCA geometry, geodetic cross-reference and sampled 3D.
@@ -21,6 +23,8 @@ The service binds to 127.0.0.1. Host checks and a loopback-origin mutation check
 - `backend/assistant.py`: BYOK configuration, provider adapters, tools and resumable model loop.
 - `backend/jobs.py`: workers, resource limits, cancellation and recovery.
 - `backend/main.py`: validated API and static application serving.
+- `backend/mcp_server.py`: validated, audited MCP research tools and HTTP transport.
+- `mcp_stdio.py`: stdio-to-local-HTTP MCP bridge and client configuration generator.
 - `frontend/src`: map, 2D/3D raster view and investigation/archive/job workbench.
 
 Extension priorities are independent labelled detection validation, stronger registry/alias resolution with official identifiers, broader site workspaces, contemporary ENC refresh, georeferenced historical overlays and optional established ML inference. Current source evidence and artifacts make those extensions inspectable without pretending they are already complete.

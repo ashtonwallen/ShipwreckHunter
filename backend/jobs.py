@@ -11,7 +11,8 @@ ACTIVE=set()
 def recover():
     for job in db.all_records('job'):
         if job['status'] in ('running','queued'):
-            db.put('job',{**job,'status':'interrupted','message':'Process stopped. Resume from saved checkpoint.'})
+            message='Process stopped. Inspect saved results before retrying from the MCP client.' if job['kind']=='mcp' else 'Process stopped. Resume from saved checkpoint.'
+            db.put('job',{**job,'status':'interrupted','message':message})
 
 def update(id,**changes):
     with LOCK:
@@ -20,17 +21,20 @@ def update(id,**changes):
 
 def submit(kind,args):
     if kind not in ('analysis','ingest','research','assistant'):raise ValueError('Unsupported job')
-    if len([j for j in db.all_records('job') if j['status'] in ('queued','running')])>=12:raise ValueError('Queue full')
+    if len([j for j in db.all_records('job') if j['kind']!='mcp' and j['status'] in ('queued','running')])>=12:raise ValueError('Queue full')
     job=db.put('job',{'kind':kind,'args':args,'status':'queued','progress':0,'checkpoint':0,'created':db.now(),'cancel_requested':False,'message':'Queued','limits':{'wall_seconds':min(14400,max(30,args.get('wall_seconds',600))),'max_steps':min(100,max(1,args.get('max_steps',8))),'max_tokens':min(500000,max(1000,args.get('max_tokens',30000)))}})
     POOL.submit(run,job['id']);return job
 
 def cancel(id):
+    j=db.get('job',id)
+    if j and j['kind']=='mcp':raise ValueError('MCP calls are controlled by the connected client')
     return update(id,cancel_requested=True,message='Cancellation requested; stops at next IO/processing checkpoint')
 
 def resume(id,extra_steps=8):
     with LOCK:
         j=db.get('job',id)
         if not j:raise ValueError('Unknown job')
+        if j['kind']=='mcp':raise ValueError('Retry MCP calls from the connected client after inspecting their saved results')
         if id in ACTIVE or j['status'] in ('queued','running'):raise ValueError('Job is already active')
         j['limits']['max_steps']=min(100,j['limits']['max_steps']+extra_steps)
         j['limits']['max_tokens']=min(500000,j['limits']['max_tokens']+30000)

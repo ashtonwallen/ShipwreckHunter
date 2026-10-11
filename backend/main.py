@@ -10,8 +10,16 @@ from fastapi.exceptions import RequestValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel,Field,SecretStr
 from . import db,connectors,analysis,research,assistant,jobs
+from .mcp_server import create_http_app
 
-app=FastAPI(title='Shipwreck Hunting Tool',version='0.1.0')
+mcp_app=create_http_app()
+
+@asynccontextmanager
+async def lifespan(app):
+    async with mcp_app.router.lifespan_context(mcp_app):
+        yield
+
+app=FastAPI(title='Shipwreck Hunting Tool',version='0.1.0',lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=['127.0.0.1','localhost','[::1]','testserver'])
 
 @app.middleware('http')
@@ -193,6 +201,8 @@ def report(format:Literal['markdown','html','json']='markdown'):
 
 # Only images/derived artifacts are served; raw source snapshots, DB and secrets
 # cannot be fetched by guessing a static file path.
+# Register the exact /mcp route before the catch-all frontend, without redirects.
+app.router.routes.extend(mcp_app.routes)
 app.mount('/data/media',StaticFiles(directory=db.DATA/'media'),name='media')
 app.mount('/data/derived',StaticFiles(directory=db.DATA/'derived'),name='derived')
 DIST=db.ROOT/'frontend/dist'

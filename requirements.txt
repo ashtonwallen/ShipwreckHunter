@@ -11,3 +11,5 @@ keyring==25.7.0
 pypdf==6.19.0
 Markdown==3.11
 pytest==9.1.1
+mcp==2.3.0
+jsonschema==4.26.0

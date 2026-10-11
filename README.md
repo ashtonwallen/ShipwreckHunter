@@ -26,6 +26,20 @@ Requires Python 3.12+ (tested with 3.13.15), Node.js 22+ and npm for a fresh fro
 4. **Archives:** search Library of Congress or Internet Archive by date, list register scans/OCR, preserve a source URL, and search the full cached text. Source content is untrusted evidence; inspect page images before associating OCR numbers with a vessel.
 5. **Research assistant:** open provider settings, choose OpenAI, Anthropic, Gemini, OpenRouter or a local OpenAI-compatible endpoint, and enter a tool-capable model ID. Cloud keys go only into the OS credential manager. Local endpoints must use loopback. No model/key is preselected or purchased. Chat can search archives, read sources, compare vessels, discover surveys, queue ingestion/analysis, inspect jobs and save explicitly unreviewed hypotheses. Follow-up messages reuse the preceding conversation. Each actual tool result is inspectable in Jobs.
 
+## Connect Claude or a local model through MCP
+
+Start (or restart) `python start.py`. The app now serves **Streamable HTTP MCP at http://127.0.0.1:8787/mcp** alongside the website. An MCP-capable client can search archives, retrieve and search source documents, compare vessels, save unreviewed notes, queue survey ingestion/analysis, inspect or cancel jobs, and read the report. The client runs its own research loop; no provider or API key needs to be configured in this app.
+
+For Claude Desktop or another client that launches stdio servers, generate configuration with your actual absolute paths:
+
+```powershell
+.venv\Scripts\python mcp_stdio.py --print-config
+```
+
+Merge the printed `shipwreck-hunter` entry into your client's `mcpServers` configuration, keeping any existing servers, then restart/reconnect the client. Keep the app running. The stdio launcher connects to the same app process and database. For local models, use a tool-capable model in a host that supports MCP; a bare model inference endpoint is not an MCP client.
+
+See [MCP setup, available tools and example research request](docs/MCP.md). All executed MCP tool calls appear in **Jobs** with their arguments and results; new source-backed notes appear in the report as unreviewed. There is no shell, credential-management or publishing tool.
+
 ## What the saved evidence establishes
 
 The Mystery Collier remains unidentified. Its source-backed profile, five comparative vessel records, historical registry OCR and a ranked list of sparse leads/exclusions are saved. **There is no defensible leading named identity yet.** Actor and Active have incomplete specifications and spatial mismatches; Tay, Frank A. Palmer and Louise B. Crary are exclusions, not proposed solutions. The generated report is written locally to `data/exports/mystery-collier.md`.
