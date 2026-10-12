@@ -2,7 +2,7 @@
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from . import db, connectors, analysis, research
+from . import db, connectors, analysis, research, investigations
 
 POOL=ThreadPoolExecutor(max_workers=2,thread_name_prefix='ghostfleet')
 LOCK=threading.RLock()
@@ -20,6 +20,10 @@ def update(id,**changes):
         return j
 
 def submit(kind,args):
+    if args.get('site_id'):
+        investigations.get(args['site_id'])
+        if kind=='analysis':investigations.require_link(args['site_id'],'dataset',args.get('dataset_id'))
+        if kind=='ingest':investigations.require_link(args['site_id'],'survey',args.get('survey_id'))
     if kind not in ('analysis','ingest','research','assistant'):raise ValueError('Unsupported job')
     if len([j for j in db.all_records('job') if j['kind']!='mcp' and j['status'] in ('queued','running')])>=12:raise ValueError('Queue full')
     job=db.put('job',{'kind':kind,'args':args,'status':'queued','progress':0,'checkpoint':0,'created':db.now(),'cancel_requested':False,'message':'Queued','limits':{'wall_seconds':min(14400,max(30,args.get('wall_seconds',600))),'max_steps':min(100,max(1,args.get('max_steps',8))),'max_tokens':min(500000,max(1000,args.get('max_tokens',30000)))}})
@@ -56,21 +60,33 @@ def run(id):
             result=analysis.detect(args['dataset_id'],args.get('method','residual'),args.get('threshold',3),args.get('scale_m',12),stopped)
         elif kind=='ingest':
             update(id,message='Downloading original product; partial transfers are retained',progress=10)
-            path=connectors.download(args['url'],cancel=stopped)
+            path=connectors.download(args['url'],max_bytes=args.get('max_bytes',250_000_000),cancel=stopped)
             if stopped():raise InterruptedError()
             update(id,message='Validating CRS, units and grid',progress=75)
             survey=db.get('survey',args['survey_id']);p=survey.get('feature',{}).get('properties',{}) if survey else {}
-            result=analysis.ingest(path,args['survey_id'],args['url'],args.get('kind','bathymetry'),[p.get('DATE_SURVEY_BEGIN'),p.get('DATE_SURVEY_END')],args.get('elevation_positive_up',True))
+            header=analysis.inspect_raster(path,args.get('kind','bathymetry'))
+            db.event(id,'download',{'status':'cached original available','bytes':path.stat().st_size,'raster':header})
+            result=analysis.ingest_product(path,args['survey_id'],args['url'],args.get('kind','bathymetry'),[p.get('DATE_SURVEY_BEGIN'),p.get('DATE_SURVEY_END')],args.get('elevation_positive_up',True),bbox=args.get('bbox'),cancel=stopped,
+                progress=lambda n,total:update(id,progress=75+round(24*n/total),message=f'Validated window {n} of {total}; original preserved'))
         elif kind=='assistant':
             from .assistant import investigate
             result=investigate(args['prompt'],id,job['limits']['max_steps'],job['limits']['max_tokens'],stopped,checkpoint,args.get('previous_job_id'))
         else:
             steps=[('Read archaeological profile',lambda:db.claims('mystery-collier')),('Search digitized newspapers',lambda:connectors.search_archive(args.get('query','coal schooner Boston lost'),'loc')),('Search vessel registry catalogues',lambda:connectors.search_archive('title:(merchant vessels United States) AND mediatype:texts','internet_archive')),('Test vessel hypotheses',research.rank),('Review contradictions',lambda:[{'name':v['name'],'contradictions':v['contradictions'],'missing':v['missing']} for v in research.rank()]),('Save source-backed report',lambda:{'report':research.report()})]
+            site_id=args.get('site_id',investigations.DEFAULT)
+            if site_id!=investigations.DEFAULT:
+                investigations.get(site_id)
+                steps=[('Read investigation evidence',lambda:db.claims(site_id)),
+                       ('Review saved research notes',lambda:investigations.notes(site_id)),
+                       ('Review linked historical vessels',lambda:research.rank(site_id)),
+                       ('Save investigation report',lambda:{'report':research.report(site_id)})]
             for i,(name,fn) in enumerate(steps):
                 if i<job['checkpoint']:continue
                 if stopped():raise InterruptedError()
                 update(id,message=name);r=fn();db.event(id,'research',{'step':name,'result':r});checkpoint(i+1,len(steps))
-            result={'report_url':'/api/report?format=markdown','summary':'Evidence audit complete. No identification established. Review archived results and contradictions.'}
+            result={'report_url':'/api/report?format=markdown&site_id='+site_id,'summary':'Evidence audit complete. No identification established. Review archived results and contradictions.'}
+        if args.get('site_id') and kind=='ingest':
+            for dataset_id in result.get('dataset_ids',[]):investigations.link(args['site_id'],'dataset',dataset_id)
         db.event(id,'result',result)
         update(id,status='limited' if result.get('status')=='limited' else 'complete',progress=100,result=result,message='Saved results' if result.get('status')!='limited' else 'Resource limit reached')
     except InterruptedError:

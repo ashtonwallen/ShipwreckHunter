@@ -16,5 +16,7 @@ data/private/
 data/raw/
 frontend/dist/
 
-# all generated and downloaded data stays local
+# Personal investigations, research scripts, notes, exports and downloads belong
+# under data/ (use data/private/ for one-off helpers); never commit them.
+# All generated and downloaded data stays local
 data/

@@ -2,14 +2,15 @@
 import difflib
 import math
 import re
-from . import db
+from . import db, investigations
 
 def normalize(name):
     return re.sub(r'[^a-z0-9]','',name.lower())
 
-def entity_links(name):
+def entity_links(name,site_id=None):
     result=[]
     for v in db.all_records('vessel'):
+        if site_id and not investigations.belongs(v,site_id):continue
         names=[v['name']]+v.get('aliases',[])
         scores=[(difflib.SequenceMatcher(None,normalize(name),normalize(n)).ratio(),n) for n in names]
         score,match=max(scores)
@@ -23,6 +24,7 @@ def rank(site_id='mystery-collier'):
     # Transparent compatibility, not Bayesian posterior. Missing dimensions
     # contribute zero, so absent measurements cannot increase the score.
     for vessel in db.all_records('vessel'):
+        if not investigations.belongs(vessel,site_id):continue
         rows=[];support=[];contradictions=[];missing=[];score=0
         for field,weight,tolerance in [('length_m',35,.2),('beam_m',25,.25)]:
             a=site.get(field);b=vessel.get(field)
@@ -32,6 +34,10 @@ def rank(site_id='mystery-collier'):
                 (support if relative<=tolerance else contradictions).append(f'{field}: {b:.1f} m versus wreck estimate {a:.1f} m')
             else:missing.append(field)
         for field,target,weight in [('construction','wood',10),('rig','schooner',10),('cargo','coal',20)]:
+            if site_id!=investigations.DEFAULT:
+                target=site.get(field)
+                if not target:missing.append('wreck '+field);continue
+                target=target.lower()
             val=vessel.get(field)
             if val:
                 match=target in val.lower();score+=weight if match else 0
@@ -47,6 +53,7 @@ def rank(site_id='mystery-collier'):
     return sorted(results,key=lambda v:(v.get('excluded',False),-v['score']))
 
 def report(site_id='mystery-collier'):
+    if site_id!=investigations.DEFAULT:return investigations.report(site_id)
     site=db.get('site',site_id)
     if not site:raise ValueError('Unknown investigation')
     claims=db.claims(site_id);sources={s['id']:s for s in db.all_records('source')}
@@ -62,23 +69,21 @@ def report(site_id='mystery-collier'):
             source=sources.get(c['source_id'],{});used.add(c['source_id']);lines.append(f'- {c["field"]}: {c["value"]} [{source.get("title","Source")}]({source.get("url","")}), {c["locator"]}.')
     lines+=['','## Tests that could discriminate between identities','']+[f'{i+1}. {s}' for i,s in enumerate(site['next_steps'])]
     lines+=['','## Research coverage and limitations','', 'The initial investigation searched NOAA archaeological accounts, a first-person expedition account, public heritage profiles, web-indexed contemporary newspaper reports and archive catalogues. It does not constitute a complete census of New England losses. Catalogue search hits are leads, not verified vessel records. OCR must be checked against scans. Broad date compatibility cannot tie a vessel to a particular storm.','', 'Digitized U.S. merchant-vessel register OCR was retrieved from Internet Archive. Names recur and OCR column order is corrupted. No dimensions were transferred from an adjacent OCR column into a candidate record without a page-level check.','', 'Lloyd’s Register casualty PDFs and the tested Library of Congress newspaper PDF returned HTTP 403. No unavailable page contents were inferred. AWOIS records come from an ArcGIS copy and some histories are truncated; this cannot establish the absence of a wreck.','', '## Survey screening demonstration','']
-    for run in db.all_records('run'):
+    for run in investigations.records(site_id,'run'):
         ds=db.get('dataset',run['dataset_id'])
         lines +=[f'- {ds["name"]}: {len(run["candidates"])} unreviewed terrain candidates; {ds["resolution_m"]} m cells; parameters {run["parameters"]}; source SHA-256 `{ds["sha256"]}`. [Survey product]({ds["url"]}). {run["evaluation"]}']
-    lines +=['','The Gloucester Harbor demonstration is a different site from the Mystery Collier. No detection has been validated as a new wreck. A missing catalogue match is not a discovery.']
-    for evaluation in db.all_records('evaluation'):
+    lines +=['','No detection has been validated as a new wreck. A missing catalogue match is not a discovery.']
+    for evaluation in investigations.records(site_id,'evaluation'):
         lines+=['','### Spatial holdout screening audit',evaluation['protocol'],evaluation['limitation']]
         for test in evaluation['results']:
             lines.append(f'- {test["method"]}: {test["known_wreck_points_near_detections"]}/{test["known_wreck_points_on_grid"]} selected documented wreck points and {test["known_rock_points_near_detections"]}/{test["known_rock_points_on_grid"]} selected documented rock points within 10 m of a candidate segment. These are proximity checks, not confirmed detections or a complete precision/recall estimate.')
-    notes=db.all_records('research_note')
+    notes=investigations.notes(site_id)
     if notes:
         lines+=['','## Saved AI research notes — unreviewed','']
         for note in notes:
             lines +=[f'### {note["subject"]}',note['text'],'Contradictions: '+'; '.join(note.get('contradictions',[]))]
             used.update(note.get('source_ids',[]))
     lines+=['','## Provenance','']
-    for s in sources.values():
-        if 'archive.org/download/' in s.get('url',''):used.add(s['id'])
     for id in sorted(used):
         s=sources.get(id,{})
         lines.append(f'- [{s.get("title",id)}]({s.get("url","")}); retrieved {s.get("retrieved","unknown")}; status {s.get("status")}; SHA-256 `{s.get("sha256","not retrieved")}`.')

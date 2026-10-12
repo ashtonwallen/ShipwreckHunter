@@ -3,16 +3,20 @@ import hashlib
 import io
 import json
 import re
+import threading
 from urllib.parse import urlparse, urljoin
 import httpx
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
 from . import db
 
-SURVEYS='https://gis.ngdc.noaa.gov/arcgis/rest/services/web_mercator/nos_hydro_dynamic/MapServer/0'
+# Official BAG footprint layer used by NCEI's current Bathymetric Data Viewer.
+# The retired nos_hydro_dynamic layer returns "Layer not found" (October 2026).
+SURVEYS='https://services2.arcgis.com/C8EMgrsFcRFL6LrL/arcgis/rest/services/NOS_Hydrographic_Survey_Data_view/FeatureServer/0'
 WRECKS='https://services5.arcgis.com/HDRa0B57OVrv2E1q/arcgis/rest/services/Wrecks_and_Obstructions/FeatureServer/0'
-ALLOWED=('noaa.gov','usgs.gov','loc.gov','archive.org','nps.gov','mass.gov','lrfoundation.org.uk','mua.apps.uri.edu','kirstinmeyer.blogspot.com','boem.gov','marinecadastre.gov','archives.gov','biodiversitylibrary.org','collections.mnhs.org','oregonnews.uoregon.edu','chroniclingamerica.loc.gov')
+ALLOWED=('noaa.gov','usgs.gov','loc.gov','archive.org','nps.gov','mass.gov','maine.gov','mainememory.net','mooseheadhistory.org','katahdincruises.com','lrfoundation.org.uk','mua.apps.uri.edu','kirstinmeyer.blogspot.com','boem.gov','marinecadastre.gov','archives.gov','biodiversitylibrary.org','collections.mnhs.org','oregonnews.uoregon.edu','chroniclingamerica.loc.gov')
 HEADERS={'User-Agent':'GHOSTFLEET/0.1 (local maritime research; public sources)'}
+DOWNLOAD_LOCK=threading.Lock()
 
 def validate_url(url):
     p=urlparse(url)
@@ -75,7 +79,9 @@ def arcgis(base, bbox, geojson=True):
     with httpx.Client(timeout=45,headers=HEADERS) as client:
         while offset<10000:
             params={'f':'geojson' if geojson else 'json','where':'1=1','geometry':','.join(map(str,bbox)),'geometryType':'esriGeometryEnvelope','inSR':4326,'outSR':4326,'outFields':'*','resultRecordCount':1000,'resultOffset':offset,'orderByFields':'OBJECTID' if geojson else 'OBJECTID_1'}
-            r=client.get(base+'/query',params=params);r.raise_for_status();d=r.json()
+            r=client.get(base+'/query',params=params)
+            if r.status_code>=400:raise ValueError(f'Catalogue endpoint returned HTTP {r.status_code}: {base}; try registering a NOAA survey ID directly')
+            d=r.json()
             if 'error' in d:raise ValueError('Archive query failed: '+str(d['error'].get('message')))
             batch=d.get('features',[]);features+=batch
             if not d.get('exceededTransferLimit') and len(batch)<1000:break
@@ -89,10 +95,14 @@ def discover_surveys(bbox):
         p=f['properties'];db.put('survey',{'feature':f,'name':p['SURVEY_ID'],'year':p.get('SURVEY_YEAR'),'locality':p.get('SUBLOCALITY'),'url':p.get('DOWNLOAD_URL'),'catalog_source':SURVEYS,'retrieved':db.now()},p['SURVEY_ID'])
     return {'features':features,'count':len(features),'truncated':truncated,'source':SURVEYS,'bbox':bbox}
 
-def sync_wrecks(bbox):
+def sync_wrecks(bbox,site_id=None):
     features,truncated=arcgis(WRECKS,bbox,False)
-    for f in features:store_wreck(f)
-    snapshot=db.put('coverage',{'bbox':bbox,'count':len(features),'truncated':truncated,'source':WRECKS,'retrieved':db.now(),'limitation':'Third-party ArcGIS copy of NOAA AWOIS. Histories may be truncated; incomplete inventory, not a verified wreck census.'},'wrecks')
+    for f in features:
+        record=store_wreck(f)
+        if site_id:
+            from . import investigations
+            investigations.link(site_id,'wreck',record['id'])
+    snapshot=db.put('coverage',{'bbox':bbox,'count':len(features),'truncated':truncated,'source':WRECKS,'retrieved':db.now(),'limitation':'Third-party ArcGIS copy of NOAA AWOIS. Histories may be truncated; incomplete inventory, not a verified wreck census.'},'wrecks:'+site_id if site_id else 'wrecks')
     return snapshot
 
 def store_wreck(f):
@@ -110,11 +120,64 @@ def products(survey_id):
             out.append({'name':a.get_text(' ',strip=True),'url':url,'ingestible':bool(re.search(r'\.(bag|tif|tiff)$',url,re.I))})
     return out
 
-def download(url,max_bytes=250_000_000,cancel=lambda:False):
+
+def register_survey(survey_id):
+    """Resolve a NOAA metadata page without inventing a survey footprint."""
+    survey_id=survey_id.upper()
+    if not re.fullmatch(r'[HW]\d{5}',survey_id):raise ValueError('Use a NOAA survey ID such as H11277 or W00677')
+    number=int(survey_id[1:])
+    if number<1:raise ValueError('Invalid survey number')
+    first=((number-1)//2000)*2000+1;last=first+1999;prefix=survey_id[0]
+    url=f'https://www.ngdc.noaa.gov/nos/{prefix}{first:05d}-{prefix}{last:05d}/{survey_id}.html'
+    saved=source(url)
+    if saved['status']!='retrieved':raise ValueError('NOAA metadata unavailable: '+saved.get('error','unknown error'))
+    if survey_id not in saved.get('text','').upper():raise ValueError('Metadata page does not identify the requested survey')
+    prior=db.get('survey',survey_id) or {}
+    return db.put('survey',{**prior,'name':survey_id,'url':url,'metadata_source_id':saved['id'],'retrieved':db.now(),
+                            'coverage_note':'Metadata registration; footprint is not inferred'},survey_id)
+
+
+def product_path(url):
     validate_url(url)
     name=urlparse(url).path.rsplit('/',1)[-1]
     if not re.fullmatch(r'[\w.-]+\.(bag|tif|tiff)',name,re.I):raise ValueError('Only BAG and GeoTIFF survey products are supported')
-    destination=db.DATA/'raw'/(hashlib.sha256(url.encode()).hexdigest()[:10]+'-'+name)
+    return db.DATA/'raw'/(hashlib.sha256(url.encode()).hexdigest()[:10]+'-'+name)
+
+
+def inspect_product(url,kind='bathymetry',max_bytes=250_000_000):
+    validate_budget(max_bytes)
+    path=product_path(url)
+    result={'url':url,'cached':path.exists(),'max_bytes':max_bytes,'raster':None}
+    if path.exists():
+        from .analysis import inspect_raster
+        result.update(bytes=path.stat().st_size,download_required_bytes=0,raster=inspect_raster(path,kind),within_download_limit=True)
+    else:
+        with httpx.Client(timeout=30,headers=HEADERS,follow_redirects=False) as client:
+            r=client.head(url)
+        if r.status_code>=400 or r.is_redirect:
+            result.update(bytes=None,within_download_limit=None,warning=f'HEAD returned HTTP {r.status_code}; download remains bounded, raster dimensions unknown')
+        else:
+            size=int(r.headers['content-length']) if r.headers.get('content-length','').isdigit() else None
+            result.update(bytes=size,within_download_limit=size<=max_bytes if size is not None else None)
+        result['coverage_note']='Raster dimensions and actual valid coverage are checked after download; no raster bytes fetched by this inspection'
+    return result
+
+
+def validate_budget(max_bytes):
+    if not isinstance(max_bytes,int) or not 1<=max_bytes<=1_000_000_000:raise ValueError('Product byte limit must be between 1 and 1000000000')
+
+def download(url,max_bytes=250_000_000,cancel=lambda:False):
+    # Two ingest workers must not write the same resumable file concurrently.
+    while not DOWNLOAD_LOCK.acquire(timeout=.2):
+        if cancel():raise InterruptedError()
+    try:return _download(url,max_bytes,cancel)
+    finally:DOWNLOAD_LOCK.release()
+
+
+def _download(url,max_bytes,cancel):
+    validate_budget(max_bytes)
+    destination=product_path(url)
+    if cancel():raise InterruptedError()
     if destination.exists():return destination
     part=destination.with_suffix(destination.suffix+'.part')
     meta=part.with_suffix(part.suffix+'.json')
@@ -169,11 +232,23 @@ def archive_files(identifier):
     data=json.loads(raw)
     return [{'name':f['name'],'url':f'https://archive.org/download/{identifier}/'+f['name'],'format':f.get('format'),'size':f.get('size'),'note':'OCR is unverified; check scan before asserting a registry entry'} for f in data.get('files',[]) if f['name'].endswith(('_djvu.txt','.pdf','_text.pdf'))][:40]
 
-def search_source(source_id,query):
+def search_source(source_id,query,offset=0,limit=12):
     saved=db.get('source',source_id)
     if not saved or saved['status']!='retrieved':raise ValueError('Retrieve source first')
     path=db.DATA/'sources'/(saved['sha256']+'.txt')
     text=path.read_text(encoding='utf8') if path.exists() else saved.get('text','')
     if not query.strip():raise ValueError('Enter a search term')
-    matches=list(re.finditer(re.escape(query),text,re.I))
-    return {'source_id':source_id,'url':saved['url'],'total_matches':len(matches),'text_length':len(text),'matches':[{'character_offset':m.start(),'excerpt':text[max(0,m.start()-400):m.end()+1600]} for m in matches[:12]],'warning':'OCR and column order may be wrong; inspect the original page before transcribing vessel specifications.'}
+    if not isinstance(offset,int) or offset<0 or not isinstance(limit,int) or not 1<=limit<=30:raise ValueError('Invalid search pagination')
+    matches=list(re.finditer(re.escape(query.strip()),text,re.I))
+    pages=list(re.finditer(r'\[PDF page (\d+)\]',text));page_index=0;excerpts=[];last_end=0
+    for match in matches:
+        if match.start()<last_end:continue
+        while page_index+1<len(pages) and pages[page_index+1].start()<=match.start():page_index+=1
+        page=pages[page_index] if pages and pages[page_index].start()<=match.start() else None
+        start=max(last_end,match.start()-400,page.start() if page else 0)
+        end=min(len(text),match.end()+1600,pages[page_index+1].start() if page and page_index+1<len(pages) else len(text))
+        excerpts.append({'character_offset':match.start(),'excerpt_start':start,'excerpt_end':end,'pdf_page':int(page.group(1)) if page else None,'excerpt':text[start:end]})
+        last_end=end
+    return {'source_id':source_id,'url':saved['url'],'total_matches':len(matches),'total_excerpts':len(excerpts),'offset':offset,
+            'next_offset':offset+limit if offset+limit<len(excerpts) else None,'text_length':len(text),'matches':excerpts[offset:offset+limit],
+            'warning':'Nearby matches share one excerpt. OCR and column order may be wrong; inspect the original page before transcribing vessel specifications.'}

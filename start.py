@@ -1,5 +1,6 @@
 """One-command local startup. No cloud account or LLM key required."""
 from pathlib import Path
+import argparse
 import hashlib
 import os
 import shutil
@@ -17,15 +18,20 @@ def run(args,**kwargs):
     subprocess.run([str(a) for a in args],check=True,**kwargs)
 
 def main():
+    parser=argparse.ArgumentParser(description='Start Shipwreck Hunter on loopback')
+    parser.add_argument('--port',type=int,default=8787)
+    args=parser.parse_args()
+    if not 1<=args.port<=65535:parser.error('--port must be between 1 and 65535')
+    url=f'http://127.0.0.1:{args.port}'
     try:
-        with urllib.request.urlopen('http://127.0.0.1:8787/api/health',timeout=2) as r:
+        with urllib.request.urlopen(url+'/api/health',timeout=2) as r:
             health=json.load(r)
         if health.get('application')=='GHOSTFLEET':
-            print('Shipwreck Hunting Tool is already running: http://127.0.0.1:8787');return
+            print('Shipwreck Hunting Tool is already running: '+url);return
     except Exception:pass
     with socket.socket() as s:
-        if s.connect_ex(('127.0.0.1',8787))==0:
-            raise SystemExit('Port 8787 is occupied by another process. Stop that process or use a different port manually.')
+        if s.connect_ex(('127.0.0.1',args.port))==0:
+            raise SystemExit(f'Port {args.port} is occupied by another process. Choose a free port with --port, for example: python start.py --port 8788')
     if not PY.exists():
         if sys.version_info<(3,12):raise SystemExit('Python 3.12+ is required; 3.13 was tested.')
         run([sys.executable,'-m','venv',ROOT/'.venv'])
@@ -40,8 +46,8 @@ def main():
         if not npm:raise SystemExit('Node.js 22+ and npm are required to build the frontend.')
         run([npm,'ci'],cwd=frontend);run([npm,'run','build'],cwd=frontend)
     if not (ROOT/'data/ghostfleet.sqlite').exists():run([PY,'-m','scripts.seed'])
-    print('Shipwreck Hunting Tool: http://127.0.0.1:8787\nCtrl+C stops the local server.',flush=True)
-    run([PY,'-m','uvicorn','backend.main:app','--host','127.0.0.1','--port','8787'])
+    print('Shipwreck Hunting Tool: '+url+'\nCtrl+C stops the local server.',flush=True)
+    run([PY,'-m','uvicorn','backend.main:app','--host','127.0.0.1','--port',str(args.port)])
 
 if __name__=='__main__':
     try:main()

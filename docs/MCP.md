@@ -51,13 +51,24 @@ This loopback endpoint is for software running on this computer. A cloud-hosted 
 | Archive discovery | `search_archive`, `archive_files`, `search_history` |
 | Source evidence | `read_source`, `list_sources`, `get_saved_source`, `search_source` |
 | Research notes | `save_research_note`, `list_research_notes` |
-| Survey discovery | `list_surveys`, `discover_surveys`, `survey_products` |
+| Survey discovery | `list_surveys`, `discover_surveys`, `register_survey`, `survey_products`, `inspect_survey_product` |
+| Catalogue and review | `sync_wreck_catalogue`, `review_candidate` |
 | Survey processing | `ingest_survey`, `start_analysis`, `list_detections` |
 | Jobs | `list_jobs`, `job_status`, `cancel_job`, `resume_job`, `start_evidence_audit` |
 
 Each tool advertises a validated JSON input schema and read/write/network annotations. No provider settings, credentials, arbitrary shell commands, filesystem paths or publication operations are exposed. Read-only annotations describe research effects; successful read calls still create local audit records.
 
 `list_sources`, `list_research_notes` and `list_jobs` accept `offset` and `limit` (default 30, maximum 100), returning `items`, `total` and `next_offset`. `get_saved_source` reads up to 18,000 characters from a saved source by offset and returns `next_offset`; this can reach text beyond the app's initial preview. `search_source` searches the full saved document. `search_history` returns metadata without large source bodies.
+
+`search_source` also accepts `offset` and `limit` (default 12, maximum 30). Nearby text matches share one non-overlapping excerpt; `total_matches` counts raw hits and `total_excerpts` counts grouped excerpts. Follow `next_offset` to reach later features. Each excerpt supplies character bounds and, when the stored text contains page markers, `pdf_page`.
+
+`list_detections` accepts `offset`, `limit` (default 50, maximum 100), `survey_id`, `dataset_id`, `run_id`, `status` and `include_coordinates` (default false). It returns `candidates`, `total`, `next_offset`, run summaries and `legacy_truncated_run_ids`. Order is descending score then candidate ID. All filters combine. Coordinates can be requested for internal review; this is not authorization to publish them. Overlap/repeated-run duplicates are retained rather than silently merged. Use `review_candidate` with candidate ID, status and a nonempty source-based reason; states are `unreviewed`, `follow-up`, `rejected`, `known-feature`.
+
+`register_survey` accepts an official NOAA ID such as `H11277` or `W00677`, retrieves its metadata page and registers it without inventing a footprint. This provides a fallback if map discovery is unavailable. `sync_wreck_catalogue` accepts a WGS84 bounding box and preserves the limitations of the third-party AWOIS mirror; it does not reconcile current ENCs or establish absence.
+
+`inspect_survey_product` accepts `url`, optional `kind` and `max_bytes`. Cached files return raster dimensions, CRS, resolution and whether windows are needed. Uncached products receive an HTTP HEAD size check only; unknown content length or unsupported HEAD is reported as unknown, not a successful preflight. Downloads remain byte-bounded.
+
+`ingest_survey` accepts optional `max_bytes` (default 250,000,000; maximum 1,000,000,000) and `bbox`. The bbox limits processed cells, **not network bytes**. Successful jobs return `dataset_ids`, `datasets`, original hash/size and window metadata. Start analysis on each returned dataset you intend to screen. Large rasters use lossless overlapping windows into the cached original, skip blank windows and preserve uncertainty bands. Window records identify `raster_storage: source-window`; older materialized subsets keep their existing behavior. `parent_sha256` hashes the original file; a window's `sha256` hashes its parent/window/interpretation descriptor. New runs retain all eligible candidates and publish their database records atomically on completion. Cancellation before completion publishes no partial run. `start_analysis` supports optional `threshold` (1–10) and `scale_m` (2–50).
 
 `read_source` preserves an allowlisted public archive URL and returns a bounded text preview. A response with `status: unavailable` means the document could not be retrieved, not that its contents are known. Existing source URL restrictions, file-size limits, hashes and provenance apply. Notes require saved source IDs and remain **AI hypothesis; unreviewed**; they do not alter established vessel records or reviewed claims.
 
@@ -86,3 +97,10 @@ Tests use isolated databases and cover tool discovery, a source-to-note-to-repor
 ```powershell
 .venv\Scripts\python -m pytest tests/test_mcp.py -q
 ```
+
+
+## Investigation context
+
+Use `list_investigations` to obtain IDs and `create_investigation` to start an empty investigation. Pass `site_id` to investigation/report/note tools and scoped source, survey, catalogue, search, detection and job-list tools. UI-created background jobs bind their investigation before execution; changing the selection does not retarget an existing job. The in-app assistant receives the selected investigation and binds tool calls to it. Conversations cannot continue across different investigations.
+
+For backward compatibility, `get_investigation`, `compare_vessels`, `get_report` and unscoped notes default to Mystery Collier. Library/list tools called without a `site_id` can still inspect the full local store. External clients should always pass an explicit investigation ID when working on a campaign. The browser does this automatically.

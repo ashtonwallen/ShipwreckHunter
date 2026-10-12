@@ -51,6 +51,53 @@ def all_records(kind):
         rows=c.execute('SELECT data FROM records WHERE kind=? ORDER BY updated DESC',(kind,)).fetchall()
     return [json.loads(r[0]) for r in rows]
 
+
+def put_many(records):
+    """Publish a completed run and its candidates together, never a partial run."""
+    with connect() as c:
+        c.executemany('INSERT INTO records VALUES(?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data,updated=excluded.updated',
+                      [(kind,item['id'],json.dumps(item,allow_nan=False),now()) for kind,item in records])
+
+
+def list_detections(offset=0,limit=50,run_id=None,dataset_id=None,survey_id=None,status=None,include_coordinates=False,site_id=None):
+    if not isinstance(offset,int) or offset<0 or not isinstance(limit,int) or not 1<=limit<=100:raise ValueError('Invalid pagination')
+    if status is not None and status not in ('unreviewed','follow-up','rejected','known-feature'):raise ValueError('Invalid review status')
+    clauses=["c.kind='candidate'", "EXISTS (SELECT 1 FROM records r WHERE r.kind='run' AND r.id=json_extract(c.data,'$.run_id'))"];values=[]
+    for field,value in [('run_id',run_id),('dataset_id',dataset_id),('status',status)]:
+        if value is not None:clauses.append(f"json_extract(c.data,'$.{field}')=?");values.append(value)
+    if survey_id is not None:
+        clauses.append("EXISTS (SELECT 1 FROM records d WHERE d.kind='dataset' AND d.id=json_extract(c.data,'$.dataset_id') AND json_extract(d.data,'$.survey_id')=?)");values.append(survey_id)
+    scoped_datasets=None
+    if site_id:
+        from . import investigations
+        investigations.get(site_id)
+        scoped_datasets=investigations.linked_ids(site_id,'dataset')
+        clauses.append("EXISTS (SELECT 1 FROM records l WHERE l.kind='investigation_link' AND json_extract(l.data,'$.site_id')=? AND json_extract(l.data,'$.kind')='dataset' AND json_extract(l.data,'$.entity_id')=json_extract(c.data,'$.dataset_id'))")
+        values.append(site_id)
+    where=' AND '.join(clauses)
+    with connect() as c:
+        total=c.execute('SELECT count(*) FROM records c WHERE '+where,values).fetchone()[0]
+        rows=c.execute("SELECT c.data FROM records c WHERE "+where+" ORDER BY json_extract(c.data,'$.score') DESC,c.id LIMIT ? OFFSET ?",[*values,limit,offset]).fetchall()
+    candidates=[json.loads(r[0]) for r in rows]
+    if not include_coordinates:candidates=[{k:v for k,v in x.items() if k not in ('lon','lat')} for x in candidates]
+    datasets={d['id']:d for d in all_records('dataset')}
+    runs=[{k:v for k,v in r.items() if k!='candidates'} for r in all_records('run')
+          if (scoped_datasets is None or r['dataset_id'] in scoped_datasets) and (not run_id or r['id']==run_id) and (not dataset_id or r['dataset_id']==dataset_id)
+          and (not survey_id or datasets.get(r['dataset_id'],{}).get('survey_id')==survey_id)]
+    return {'candidates':candidates,'total':total,'offset':offset,'limit':limit,'next_offset':offset+limit if offset+limit<total else None,
+            'runs':runs,'legacy_truncated_run_ids':[r['id'] for r in runs if r.get('truncated')],
+            'coordinate_policy':'internal coordinates included by request' if include_coordinates else 'omitted; request include_coordinates for local review',
+            'limitation':'Window and repeated-run candidates are not spatially deduplicated. Inventory absence does not establish discovery.'}
+
+
+def review_candidate(candidate_id,status,reason):
+    if status not in ('unreviewed','follow-up','rejected','known-feature'):raise ValueError('Invalid review status')
+    if not isinstance(reason,str) or not reason.strip() or len(reason)>2000:raise ValueError('Review requires a reason of 1 to 2000 characters')
+    candidate=get('candidate',candidate_id)
+    if not candidate:raise ValueError('Candidate not found')
+    event(None,'review',{'candidate_id':candidate_id,'previous':candidate['status'],'status':status,'reason':reason})
+    return put('candidate',{**candidate,'status':status,'reason':reason.strip(),'reviewed':now()})
+
 def claim(subject, field, value, source_id, locator, stance='observation', id=None):
     if not get('source', source_id):
         raise ValueError('A saved source is required for every claim')

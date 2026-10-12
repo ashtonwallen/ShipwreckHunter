@@ -125,6 +125,7 @@ def test_assistant_cooperative_cancel_resumes_pending_calls_once(monkeypatch):
     assert len([e for e in db.events('resume-tools') if e['kind']=='tool'])==2
 
 def test_followup_reuses_prior_conversation(monkeypatch):
+    seed()
     monkeypatch.setattr(assistant,'settings',lambda:{'configured':True,'provider':'local'})
     db.put('conversation',{'messages':[{'role':'system','content':assistant.SYSTEM},{'role':'user','content':'First request'},{'role':'assistant','content':'Earlier evidence'}],'steps':1,'tokens':5},'prior')
     seen=[]

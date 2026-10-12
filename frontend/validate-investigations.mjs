@@ -1,0 +1,66 @@
+// Use an isolated sample database; this test creates synthetic investigations only.
+import {chromium} from '@playwright/test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {fileURLToPath} from 'node:url';
+const output=fileURLToPath(new URL('../data/exports/',import.meta.url));
+fs.mkdirSync(output,{recursive:true});
+
+const base=process.argv[2]||'http://127.0.0.1:8790';
+if(!base.endsWith(':8790'))throw new Error('This mutation test requires the isolated test server on port 8790');
+const browser=await chromium.launch({headless:true,channel:'chrome'});
+const page=await browser.newPage({viewport:{width:1536,height:1000}});
+const errors=[];page.on('pageerror',e=>errors.push(e.message));
+try {
+ const created=await page.request.post(base+'/api/investigations',{data:{name:'Example lake A',objective:'Synthetic browser test'}});
+ assert.ok(created.ok());
+ const example=await created.json();
+ await page.goto(base);
+ await page.getByLabel('Active investigation').waitFor();
+ assert.match(await page.locator('h1').innerText(),/Mystery Collier/);
+ await page.getByLabel('Active investigation').selectOption(example.id);
+ await page.getByRole('heading',{name:'Example lake A',exact:false}).waitFor();
+ assert.equal(await page.locator('.main-sonar').count(),0);
+ assert.match(await page.locator('.assistant-context').innerText(),/Example lake A/);
+ assert.equal(await page.locator('.research-note').count(),0);
+ await page.getByRole('button',{name:'Archives',exact:true}).click();
+ assert.equal(await page.locator('.source-list button').count(),0);
+ const report=await (await page.request.get(base+'/api/report?site_id='+example.id)).text();
+ assert.ok(report.startsWith('# Example lake A'));
+ assert.ok(!report.includes('Mystery Collier'));
+
+ await page.getByRole('button',{name:'New investigation',exact:true}).click();
+ await page.getByLabel('Name',{exact:true}).fill('Independent lake test');
+ await page.getByLabel('Research area',{exact:true}).fill('Test area');
+ await page.getByLabel('What do you want to investigate?').fill('Check lake-bottom coverage without an assumed vessel identity.');
+ await page.getByRole('button',{name:'Create investigation',exact:true}).click();
+ await page.getByRole('heading',{name:/Independent lake test/}).waitFor();
+ const id=await page.getByLabel('Active investigation').inputValue();
+ assert.notEqual(id,'mystery-collier');
+ assert.match(await page.locator('.assistant-context').innerText(),/Independent lake test/);
+ assert.match(await page.locator('.investigation-overview').innerText(),/0 evidence claims.*0 sources.*0 survey grids/);
+ assert.equal(await page.locator('.research-note').count(),0);
+ await page.screenshot({path:output+'investigation-new.png'});
+ await page.getByRole('button',{name:'Archives',exact:true}).click();
+ assert.equal(await page.locator('.source-list button').count(),0);
+ await page.getByRole('button',{name:'Surveys',exact:true}).click();
+ assert.equal(await page.locator('.dataset-row').count(),0);
+ assert.equal(await page.getByRole('button',{name:'List NOAA products',exact:true}).isEnabled(),false);
+ await page.getByRole('button',{name:'Explore',exact:true}).click();
+ const map=await (await page.request.get(base+'/api/map?site_id='+id)).json();
+ assert.equal(map.surveys.features.length,0);assert.equal(map.wrecks.features.length,0);
+ await page.reload();
+ await page.getByRole('heading',{name:/Independent lake test/}).waitFor();
+ assert.equal(await page.getByLabel('Active investigation').inputValue(),id);
+ await page.getByLabel('Active investigation').selectOption(example.id);
+ await page.getByRole('heading',{name:/Example lake A/}).waitFor();
+ assert.equal(await page.locator('.research-note').count(),0);
+ await page.screenshot({path:output+'investigation-example.png'});
+ await page.getByLabel('Active investigation').selectOption('mystery-collier');
+ await page.locator('.main-sonar').waitFor();
+ assert.match(await page.locator('h1').innerText(),/Sample/);
+ assert.deepEqual(errors,[]);
+ const result={status:'passed',checks:['creation','persistent selection','empty source library','empty surveys and detections','scoped map','synthetic investigation switching','scoped report','assistant context','sample retained'],page_errors:errors};
+ fs.writeFileSync(output+'investigation-browser-validation.json',JSON.stringify(result,null,2));
+ console.log(result);
+} finally {await browser.close()}

@@ -189,7 +189,7 @@ async def test_http_and_stdio_transports_share_app(live_server):
                                    args=[str(root / 'mcp_stdio.py'), '--url', url + '/mcp'],
                                    cwd=root.parent)
     async with Client(params, read_timeout_seconds=30) as stdio:
-        assert 'Gloucester' in stdio.instructions
+        assert 'site_id' in stdio.instructions and 'list_investigations' in stdio.instructions
         tools = await stdio.list_tools()
         assert {t.name for t in tools.tools} == {t.name for t in http_tools.tools}
         assert not (await stdio.call_tool('list_sources')).is_error
